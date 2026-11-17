@@ -8,11 +8,20 @@ import {
 
 import { attackHits, type PendingAttack } from './combat-utils'
 import {
+  flashBoxer,
+  FighterAnimationController,
+  type FighterAnimationState,
+} from './fighter-view'
+import {
   createGameView,
   flashFighter,
   showAttackEffect,
   showDamageNumber,
   showDashTrail,
+  showDodgeAfterimage,
+  showKickTrail,
+  showSpecialEffect,
+  showHitFeedback,
 } from './game-view'
 import {
   ACTION_FOR_KEY,
@@ -27,17 +36,26 @@ import {
 
 export class Game extends Scene {
   private player!: Phaser.GameObjects.Arc
+  private playerVisual!: Phaser.GameObjects.Container
+  private playerAnimator!: FighterAnimationController
   private playerLabel!: Phaser.GameObjects.Text
   private facingIndicator!: Phaser.GameObjects.Arc
   private enemyLabel!: Phaser.GameObjects.Text
   private enemyStaminaFill!: Phaser.GameObjects.Rectangle
+  private enemyHudStaminaFill!: Phaser.GameObjects.Rectangle
+  private enemyStaminaText!: Phaser.GameObjects.Text
   private enemy!: Phaser.GameObjects.Arc
+  private enemyVisual!: Phaser.GameObjects.Container
+  private enemyAnimator!: FighterAnimationController
   private enemyHealthFill!: Phaser.GameObjects.Rectangle
   private enemyHealthText!: Phaser.GameObjects.Text
   private playerHealthFill!: Phaser.GameObjects.Rectangle
   private playerHealthText!: Phaser.GameObjects.Text
   private staminaFill!: Phaser.GameObjects.Rectangle
   private staminaText!: Phaser.GameObjects.Text
+  private cooldownText!: Phaser.GameObjects.Text
+  private timerText!: Phaser.GameObjects.Text
+  private roundStartedAt = 0
   private displayedStamina = -1
   private pressedKeys = new Set<string>()
   private pendingActions: CombatAction[] = []
@@ -70,6 +88,7 @@ export class Game extends Scene {
   private facingY = 0
   private stamina: number = COMBAT.maxStamina
   private matchEnded = false
+  private playerAnimationState: FighterAnimationState = 'idle'
 
   private readonly handleKeyDown = (event: KeyboardEvent) => {
     if (event.repeat || this.matchEnded) return
@@ -116,6 +135,18 @@ export class Game extends Scene {
     super('Game')
   }
 
+  preload() {
+    this.load.image(
+      'boxer',
+      `${import.meta.env.BASE_URL}assets/characters/boxer.png`,
+    )
+    this.load.spritesheet(
+      'boxer-punch',
+      `${import.meta.env.BASE_URL}assets/characters/boxer/boxer-punch.png`,
+      { frameWidth: 256, frameHeight: 256 },
+    )
+  }
+
   create() {
     this.enemyHealth = COMBAT.enemyHealth
     this.playerHealth = COMBAT.playerHealth
@@ -140,9 +171,24 @@ export class Game extends Scene {
     this.enemyDodgeCount = 0
     this.dodgeRandomState = 0x0a11ce
     this.matchEnded = false
+    this.playerAnimationState = 'idle'
+    this.roundStartedAt = this.time.now
 
     this.cameras.main.setBackgroundColor('#09111f')
+    if (!this.anims.exists('boxer-punch')) {
+      this.anims.create({
+        key: 'boxer-punch',
+        frames: this.anims.generateFrameNumbers('boxer-punch', {
+          start: 0,
+          end: 5,
+        }),
+        frameRate: 15,
+        repeat: 0,
+      })
+    }
     Object.assign(this, createGameView(this))
+    this.playerAnimator = new FighterAnimationController(this, this.playerVisual)
+    this.enemyAnimator = new FighterAnimationController(this, this.enemyVisual)
 
     window.addEventListener('keydown', this.handleKeyDown)
     window.addEventListener('keyup', this.handleKeyUp)
@@ -177,6 +223,8 @@ export class Game extends Scene {
     this.resolvePendingAttacks(time)
     this.updateFighterLabels()
     this.updateEnemyStaminaHud()
+    const seconds = Math.max(0, 84 - Math.floor((time - this.roundStartedAt) / 1000))
+    this.timerText.setText(`${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`)
   }
 
   private movePlayer(delta: number) {
@@ -189,7 +237,14 @@ export class Game extends Scene {
         Number(this.pressedKeys.has('KeyW')),
     })
 
-    if (direction.x === 0 && direction.y === 0) return
+    if (direction.x === 0 && direction.y === 0) {
+      this.playerAnimator.setMovement(false, this.facingX)
+      if (this.playerAnimationState === 'walk') {
+        this.playerAnimationState = 'idle'
+        this.playerVisual.setAngle(0)
+      }
+      return
+    }
 
     this.facingX = direction.x
     this.facingY = direction.y
@@ -203,6 +258,9 @@ export class Game extends Scene {
       COMBAT.playerRadius,
     )
     this.player.setPosition(position.x, position.y)
+    this.playerVisual.setPosition(position.x, position.y)
+    this.playerAnimationState = 'walk'
+    this.playerAnimator.setMovement(true, this.facingX)
   }
 
   private updateStaminaHud() {
@@ -228,19 +286,30 @@ export class Game extends Scene {
   private updateEnemyStaminaHud() {
     const stamina = Math.floor(this.enemyStamina)
     this.enemyStaminaFill.width = 64 * (this.enemyStamina / COMBAT.maxStamina)
+    this.enemyHudStaminaFill.width = COMBAT.barWidth * (this.enemyStamina / COMBAT.maxStamina)
     this.enemyStaminaFill.setPosition(this.enemy.x - 32, this.enemy.y - 38)
+    this.enemyVisual.setPosition(this.enemy.x, this.enemy.y)
     if (stamina !== this.enemyStaminaDisplayed) {
+      this.enemyStaminaText.setText(`${stamina} / ${COMBAT.maxStamina}`)
       this.enemyStaminaDisplayed = stamina
     }
   }
 
   private updateFighterLabels() {
-    this.playerLabel.setPosition(this.player.x, this.player.y + 30)
-    this.facingIndicator.setPosition(
-      this.player.x + this.facingX * 10,
-      this.player.y + this.facingY * 10,
-    )
+    const bob = Math.sin(this.time.now / 125) * 1.5
+    this.playerLabel.setPosition(this.player.x, this.player.y + 48)
+    this.playerVisual.setPosition(this.player.x, this.player.y + bob)
+    this.enemyVisual.setPosition(this.enemy.x, this.enemy.y + Math.sin(this.time.now / 145 + 1) * 1.5)
+    this.playerAnimator.setFacing(this.facingX)
+    this.enemyAnimator.setFacing(this.enemyFacingX)
+    this.facingIndicator.setPosition(this.player.x + this.facingX * 21, this.player.y + this.facingY * 21)
     this.enemyLabel.setPosition(this.enemy.x, this.enemy.y - 56)
+    this.cooldownText.setText(`J  PUNCH      ${this.cooldownHint('punch')}\nK  KICK       ${this.cooldownHint('kick')}\nL  DODGE      ${this.cooldownHint('dash')}\nSPACE  SPECIAL  ${this.cooldownHint('special')}`)
+  }
+
+  private cooldownHint(action: CombatAction) {
+    const remaining = Math.max(0, this.cooldowns[action] - this.time.now)
+    return remaining > 0 ? `${(remaining / 1000).toFixed(1)}s` : 'READY'
   }
 
   private performAction(action: CombatAction, time: number) {
@@ -266,6 +335,16 @@ export class Game extends Scene {
     const origin = { x: this.player.x, y: this.player.y }
     const facing = { x: this.facingX, y: this.facingY }
     showAttackEffect(this, this.player, facing, config)
+    if (action === 'kick') showKickTrail(this, this.player, facing)
+    if (action === 'punch') {
+      this.playerAnimationState = 'punch'
+      this.playerAnimator.play('punch', facing.x)
+    } else {
+      const visualState = action === 'special' ? 'special' : 'kick'
+      this.playerAnimationState = visualState
+      this.playerAnimator.play(visualState, facing.x)
+    }
+    if (action === 'special') showSpecialEffect(this, this.player, facing)
 
     if (attackHits(origin, facing, this.enemy, config)) {
       this.registerEnemyThreat(time)
@@ -328,6 +407,7 @@ export class Game extends Scene {
 
       if (distance <= COMBAT.actions.kick.range) {
         this.enemyState = 'ATTACK'
+        this.enemyAnimator.setMovement(false, this.enemyFacingX)
         this.startEnemyAttack(distance, time)
       } else {
         this.enemyState = 'CHASE'
@@ -349,7 +429,10 @@ export class Game extends Scene {
       this.player.y - this.enemy.y,
     )
 
-    if (distance <= COMBAT.actions.kick.range) return
+    if (distance <= COMBAT.actions.kick.range) {
+      this.enemyAnimator.setMovement(false, this.enemyFacingX)
+      return
+    }
 
     const position = moveWithinBounds(
       { x: this.enemy.x, y: this.enemy.y },
@@ -360,6 +443,7 @@ export class Game extends Scene {
       24,
     )
     this.enemy.setPosition(position.x, position.y)
+    this.enemyAnimator.setMovement(true, this.enemyFacingX)
   }
 
   private startEnemyAttack(distance: number, time: number) {
@@ -395,6 +479,8 @@ export class Game extends Scene {
     const origin = { x: this.enemy.x, y: this.enemy.y }
     const facing = { x: this.enemyFacingX, y: this.enemyFacingY }
     showAttackEffect(this, this.enemy, facing, config)
+    if (action === 'kick') showKickTrail(this, this.enemy, facing)
+    this.enemyAnimator.play(action, facing.x)
     this.pendingAttacks.push({
       attacker: 'enemy',
       action,
@@ -441,8 +527,12 @@ export class Game extends Scene {
     this.pendingAttacks = this.pendingAttacks.filter(
       (attack) => attack.attacker !== 'enemy',
     )
+    showDodgeAfterimage(this, this.enemyVisual, start.x, start.y)
     this.enemy.setPosition(result.position.x, result.position.y)
+    this.enemyVisual.setAngle(result.direction.x < 0 ? 15 : -15)
+    this.tweens.add({ targets: this.enemyVisual, angle: 0, alpha: 1, duration: 230, ease: 'Cubic.Out' })
     showDashTrail(this, start, result.position, dash.color)
+    this.enemyAnimator.play('dodge', result.direction.x)
     this.updateEnemyStaminaHud()
   }
 
@@ -462,14 +552,14 @@ export class Game extends Scene {
       if (!attackHits(attack.origin, attack.facing, target, config)) continue
 
       if (attack.attacker === 'player' && this.enemyState !== 'DEAD') {
-        this.damageEnemy(config.damage)
+        this.damageEnemy(config.damage, attack.facing)
       } else if (attack.attacker === 'enemy') {
-        this.damagePlayer(config.damage)
+        this.damagePlayer(config.damage, attack.facing)
       }
     }
   }
 
-  private damageEnemy(damage: number) {
+  private damageEnemy(damage: number, direction: { x: number; y: number }) {
     if (this.enemyState === 'DEAD') return
 
     this.enemyHealth = Math.max(0, this.enemyHealth - damage)
@@ -477,17 +567,20 @@ export class Game extends Scene {
       COMBAT.barWidth * (this.enemyHealth / COMBAT.enemyHealth)
     this.enemyHealthText.setText(`${this.enemyHealth} / ${COMBAT.enemyHealth}`)
     this.enemyLabel.setText(`${this.enemyHealth} HP`)
-    flashFighter(this, this.enemy, 0xff755f)
+    flashFighter(this, this.enemyVisual)
+    flashBoxer(this, this.enemyVisual)
     showDamageNumber(this, this.enemy, damage)
+    this.hitFeedback(this.enemy, direction, damage)
 
     if (this.enemyHealth === 0) {
       this.enemyState = 'DEAD'
       this.enemyDodgeAt = null
+      this.enemyAnimator.play('knockout', direction.x)
       this.showMatchEnd('YOU WIN', 0x48e4c3)
     }
   }
 
-  private damagePlayer(damage: number) {
+  private damagePlayer(damage: number, direction: { x: number; y: number }) {
     if (this.matchEnded) return
 
     this.playerHealth = Math.max(0, this.playerHealth - damage)
@@ -497,10 +590,14 @@ export class Game extends Scene {
       `${this.playerHealth} / ${COMBAT.playerHealth}`,
     )
     this.playerHealthDisplayed = this.playerHealth
-    flashFighter(this, this.player, 0x48e4c3)
+    flashFighter(this, this.playerVisual)
+    flashBoxer(this, this.playerVisual)
     showDamageNumber(this, this.player, damage)
+    this.hitFeedback(this.player, direction, damage)
 
     if (this.playerHealth === 0) {
+      this.playerAnimationState = 'knockout'
+      this.playerAnimator.play('knockout', direction.x)
       this.showMatchEnd('YOU LOSE', 0xff755f)
     }
   }
@@ -525,29 +622,55 @@ export class Game extends Scene {
     this.facingX = result.direction.x
     this.facingY = result.direction.y
     this.player.setPosition(result.position.x, result.position.y)
+    this.playerVisual.setPosition(result.position.x, result.position.y)
+    showDodgeAfterimage(this, this.playerVisual, startX, startY)
+    this.playerAnimationState = 'dodge'
+    this.playerAnimator.play('dodge', result.direction.x)
+    this.playerVisual.setAlpha(0.68)
+    this.tweens.add({ targets: this.playerVisual, alpha: 1, duration: 200, ease: 'Cubic.Out' })
 
     showDashTrail(this, { x: startX, y: startY }, result.position, config.color)
+  }
+
+  private hitFeedback(target: Phaser.GameObjects.Arc, direction: { x: number; y: number }, damage: number) {
+    const point = { x: target.x - direction.x * 9, y: target.y - 19 - direction.y * 7 }
+    showHitFeedback(this, point, direction, damage)
+    this.cameras.main.shake(90, 0.0025 + damage * 0.00008, true)
+    if (target === this.player) {
+      this.playerAnimationState = 'hurt'
+      this.playerAnimator.play('hurt', -direction.x)
+    } else this.enemyAnimator.play('hurt', -direction.x)
+    // A tiny real-time pause makes confirmed hits read without delaying combat timers.
+    this.scene.pause()
+    window.setTimeout(() => { if (this.scene.isPaused()) this.scene.resume() }, 38)
   }
 
   private showMatchEnd(title: 'YOU WIN' | 'YOU LOSE', color: number) {
     this.matchEnded = true
     this.pendingActions = []
     this.pendingAttacks = []
-    this.add.rectangle(WIDTH / 2, HEIGHT / 2, WIDTH, HEIGHT, 0x050a12, 0.82)
+    this.add.rectangle(WIDTH / 2, HEIGHT / 2, WIDTH, HEIGHT, 0x050507, 0.82).setDepth(100)
+    const card = this.add.rectangle(WIDTH / 2, HEIGHT / 2, 410, 260, 0x151116, 0.97)
+      .setStrokeStyle(2, color, 0.88)
+      .setDepth(101)
+    this.add.rectangle(WIDTH / 2, 214, 250, 3, color, 0.85).setDepth(102)
 
     this.add
-      .text(WIDTH / 2, 245, title, {
+      .text(WIDTH / 2, 253, title, {
         fontFamily: 'Arial Black, sans-serif',
-        fontSize: '54px',
+        fontSize: '46px',
         color: `#${color.toString(16).padStart(6, '0')}`,
-        letterSpacing: 5,
+        stroke: '#08070a',
+        strokeThickness: 7,
+        letterSpacing: 4,
       })
       .setOrigin(0.5)
+      .setDepth(103)
 
     this.add
       .text(
         WIDTH / 2,
-        300,
+        304,
         title === 'YOU WIN' ? 'The arena is yours.' : 'You were defeated.',
         {
           fontFamily: 'Arial, sans-serif',
@@ -556,23 +679,28 @@ export class Game extends Scene {
         },
       )
       .setOrigin(0.5)
+      .setDepth(103)
 
+    const buttonColor = title === 'YOU WIN' ? 0xd49a52 : 0xb8433f
     const restartButton = this.add
-      .rectangle(WIDTH / 2, 372, 176, 52, color)
+      .rectangle(WIDTH / 2, 374, 186, 48, buttonColor)
+      .setStrokeStyle(1, 0xffdfaa, 0.72)
+      .setDepth(103)
       .setInteractive({ useHandCursor: true })
     const restartLabel = this.add
-      .text(WIDTH / 2, 372, 'RESTART', {
+      .text(WIDTH / 2, 374, 'FIGHT AGAIN', {
         fontFamily: 'Arial, sans-serif',
         fontSize: '15px',
         fontStyle: 'bold',
-        color: '#09111f',
+        color: '#160f10',
         letterSpacing: 2,
       })
       .setOrigin(0.5)
+      .setDepth(104)
 
-    restartButton.on('pointerover', () => restartButton.setFillStyle(0xffffff))
-    restartButton.on('pointerout', () => restartButton.setFillStyle(color))
+    restartButton.on('pointerover', () => restartButton.setFillStyle(0xffd899))
+    restartButton.on('pointerout', () => restartButton.setFillStyle(buttonColor))
     restartButton.on('pointerdown', () => this.scene.restart())
-    restartLabel.setDepth(1)
+    this.tweens.add({ targets: [card, restartButton, restartLabel], alpha: 1, duration: 260, ease: 'Cubic.Out' })
   }
 }
