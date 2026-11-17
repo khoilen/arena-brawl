@@ -3,33 +3,120 @@ import { Scene } from 'phaser'
 
 const WIDTH = 800
 const HEIGHT = 600
-const ARENA = { left: 24, right: 776, top: 96, bottom: 576 }
-const PLAYER_RADIUS = 18
-const PLAYER_SPEED = 250
-const ATTACK_RANGE = 92
-const ATTACK_DAMAGE = 10
-const ENEMY_MAX_HEALTH = 100
+const ARENA = { left: 24, right: 776, top: 104, bottom: 576 }
+
+type CombatAction = 'punch' | 'kick' | 'dash' | 'special'
+
+type ActionConfig = {
+  staminaCost: number
+  cooldownMs: number
+  damage: number
+  range: number
+  minFacingDot: number
+  color: number
+  effectRadius: number
+}
+
+const COMBAT = {
+  playerRadius: 18,
+  playerSpeed: 250,
+  playerHealth: 100,
+  enemyHealth: 100,
+  maxStamina: 100,
+  staminaRegenPerSecond: 15,
+  dashDistance: 150,
+  barWidth: 220,
+  actions: {
+    punch: {
+      staminaCost: 0,
+      cooldownMs: 400,
+      damage: 10,
+      range: 86,
+      minFacingDot: 0.35,
+      color: 0x48e4c3,
+      effectRadius: 24,
+    },
+    kick: {
+      staminaCost: 0,
+      cooldownMs: 700,
+      damage: 15,
+      range: 116,
+      minFacingDot: 0.25,
+      color: 0xffbc66,
+      effectRadius: 34,
+    },
+    dash: {
+      staminaCost: 20,
+      cooldownMs: 1000,
+      damage: 0,
+      range: 0,
+      minFacingDot: 0,
+      color: 0x70a8ff,
+      effectRadius: 0,
+    },
+    special: {
+      staminaCost: 30,
+      cooldownMs: 2000,
+      damage: 25,
+      range: 148,
+      minFacingDot: 0.2,
+      color: 0xc78bff,
+      effectRadius: 54,
+    },
+  } satisfies Record<CombatAction, ActionConfig>,
+} as const
+
+const ACTION_FOR_KEY: Record<string, CombatAction> = {
+  KeyJ: 'punch',
+  KeyK: 'kick',
+  KeyL: 'dash',
+  Space: 'special',
+}
 
 export class Game extends Scene {
   private player!: Phaser.GameObjects.Arc
   private playerLabel!: Phaser.GameObjects.Text
+  private facingIndicator!: Phaser.GameObjects.Arc
   private enemy!: Phaser.GameObjects.Arc
   private enemyHealthFill!: Phaser.GameObjects.Rectangle
   private enemyHealthText!: Phaser.GameObjects.Text
+  private staminaFill!: Phaser.GameObjects.Rectangle
+  private staminaText!: Phaser.GameObjects.Text
+  private displayedStamina = -1
   private pressedKeys = new Set<string>()
-  private punchRequested = false
-  private enemyHealth = ENEMY_MAX_HEALTH
+  private pendingActions: CombatAction[] = []
+  private cooldowns: Record<CombatAction, number> = {
+    punch: 0,
+    kick: 0,
+    dash: 0,
+    special: 0,
+  }
+  private facingX = 1
+  private facingY = 0
+  private stamina: number = COMBAT.maxStamina
+  private enemyHealth: number = COMBAT.enemyHealth
   private hasWon = false
 
   private readonly handleKeyDown = (event: KeyboardEvent) => {
     if (event.repeat) return
 
-    if (!['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyJ'].includes(event.code)) return
+    if (
+      ![
+        'KeyW',
+        'KeyA',
+        'KeyS',
+        'KeyD',
+        ...Object.keys(ACTION_FOR_KEY),
+      ].includes(event.code)
+    ) {
+      return
+    }
 
     event.preventDefault()
 
-    if (event.code === 'KeyJ' && !this.pressedKeys.has('KeyJ')) {
-      this.punchRequested = true
+    const action = ACTION_FOR_KEY[event.code]
+    if (action && !this.pressedKeys.has(event.code)) {
+      this.pendingActions.push(action)
     }
 
     this.pressedKeys.add(event.code)
@@ -48,7 +135,7 @@ export class Game extends Scene {
     window.removeEventListener('keyup', this.handleKeyUp)
     window.removeEventListener('blur', this.clearPressedKeys)
     this.clearPressedKeys()
-    this.punchRequested = false
+    this.pendingActions = []
   }
 
   constructor() {
@@ -56,10 +143,15 @@ export class Game extends Scene {
   }
 
   create() {
-    this.enemyHealth = ENEMY_MAX_HEALTH
+    this.enemyHealth = COMBAT.enemyHealth
     this.hasWon = false
+    this.stamina = COMBAT.maxStamina
+    this.displayedStamina = -1
+    this.facingX = 1
+    this.facingY = 0
     this.pressedKeys.clear()
-    this.punchRequested = false
+    this.pendingActions = []
+    this.cooldowns = { punch: 0, kick: 0, dash: 0, special: 0 }
 
     this.cameras.main.setBackgroundColor('#09111f')
     this.drawArena()
@@ -75,15 +167,24 @@ export class Game extends Scene {
     EventBus.emit('current-scene-ready', this)
   }
 
-  update(_time: number, delta: number) {
+  update(time: number, delta: number) {
     if (this.hasWon) return
 
+    this.stamina = Math.min(
+      COMBAT.maxStamina,
+      this.stamina + COMBAT.staminaRegenPerSecond * (delta / 1000),
+    )
+    this.updateStaminaHud()
     this.movePlayer(delta)
     this.playerLabel.setPosition(this.player.x, this.player.y + 30)
+    this.facingIndicator.setPosition(
+      this.player.x + this.facingX * 10,
+      this.player.y + this.facingY * 10,
+    )
 
-    if (this.punchRequested) {
-      this.punchRequested = false
-      this.punch()
+    for (const action of this.pendingActions.splice(0)) {
+      if (this.hasWon) break
+      this.performAction(action, time)
     }
   }
 
@@ -108,24 +209,29 @@ export class Game extends Scene {
     }
 
     this.add
-      .text(WIDTH / 2, 584, 'WASD MOVE     •     J PUNCH', {
-        fontFamily: 'Arial, sans-serif',
-        fontSize: '13px',
-        color: '#91a8bd',
-        letterSpacing: 2,
-      })
+      .text(
+        WIDTH / 2,
+        584,
+        'WASD MOVE  •  J PUNCH  •  K KICK  •  L DASH  •  SPACE SPECIAL',
+        {
+          fontFamily: 'Arial, sans-serif',
+          fontSize: '11px',
+          color: '#91a8bd',
+          letterSpacing: 1,
+        },
+      )
       .setOrigin(0.5)
   }
 
   private createHud() {
-    this.add.text(28, 20, 'PLAYER', {
+    this.add.text(28, 14, 'PLAYER', {
       fontFamily: 'Arial, sans-serif',
       fontSize: '13px',
       fontStyle: 'bold',
       color: '#48e4c3',
       letterSpacing: 2,
     })
-    this.add.text(548, 20, 'ARENA BOT', {
+    this.add.text(548, 14, 'ARENA BOT', {
       fontFamily: 'Arial, sans-serif',
       fontSize: '13px',
       fontStyle: 'bold',
@@ -133,7 +239,7 @@ export class Game extends Scene {
       letterSpacing: 2,
     })
     this.add
-      .text(248, 20, '100 / 100', {
+      .text(248, 14, `${COMBAT.playerHealth} / ${COMBAT.playerHealth}`, {
         fontFamily: 'Arial, sans-serif',
         fontSize: '12px',
         color: '#dbe7f3',
@@ -141,28 +247,55 @@ export class Game extends Scene {
       })
       .setOrigin(1, 0)
 
-    this.add.rectangle(28, 48, 220, 12, 0x26364a).setOrigin(0, 0.5)
-    this.add.rectangle(548, 48, 220, 12, 0x26364a).setOrigin(0, 0.5)
-    this.add.rectangle(28, 48, 220, 12, 0x48e4c3).setOrigin(0, 0.5).setDepth(1)
+    this.add.rectangle(28, 38, COMBAT.barWidth, 10, 0x26364a).setOrigin(0, 0.5)
+    this.add.rectangle(548, 38, COMBAT.barWidth, 10, 0x26364a).setOrigin(0, 0.5)
+    this.add
+      .rectangle(28, 38, COMBAT.barWidth, 10, 0x48e4c3)
+      .setOrigin(0, 0.5)
+      .setDepth(1)
     this.enemyHealthFill = this.add
-      .rectangle(548, 48, 220, 12, 0xff755f)
+      .rectangle(548, 38, COMBAT.barWidth, 10, 0xff755f)
       .setOrigin(0, 0.5)
       .setDepth(1)
     this.enemyHealthText = this.add
-      .text(768, 20, '100 / 100', {
+      .text(768, 14, `${COMBAT.enemyHealth} / ${COMBAT.enemyHealth}`, {
         fontFamily: 'Arial, sans-serif',
         fontSize: '12px',
         color: '#dbe7f3',
         align: 'right',
       })
       .setOrigin(1, 0)
+
+    this.add.text(28, 55, 'STAMINA', {
+      fontFamily: 'Arial, sans-serif',
+      fontSize: '10px',
+      fontStyle: 'bold',
+      color: '#8fb9ff',
+      letterSpacing: 1,
+    })
+    this.staminaText = this.add
+      .text(248, 55, `${COMBAT.maxStamina} / ${COMBAT.maxStamina}`, {
+        fontFamily: 'Arial, sans-serif',
+        fontSize: '10px',
+        color: '#dbe7f3',
+        align: 'right',
+      })
+      .setOrigin(1, 0)
+    this.add.rectangle(28, 78, COMBAT.barWidth, 7, 0x26364a).setOrigin(0, 0.5)
+    this.staminaFill = this.add
+      .rectangle(28, 78, COMBAT.barWidth, 7, 0x70a8ff)
+      .setOrigin(0, 0.5)
+      .setDepth(1)
   }
 
   private createFighters() {
     this.player = this.add
-      .circle(190, 334, PLAYER_RADIUS, 0x48e4c3)
+      .circle(190, 334, COMBAT.playerRadius, 0x48e4c3)
       .setStrokeStyle(3, 0xd8fff6)
       .setDepth(2)
+    this.facingIndicator = this.add
+      .circle(this.player.x + 10, this.player.y, 4, 0xeafffa)
+      .setDepth(3)
     this.playerLabel = this.add
       .text(this.player.x, this.player.y + 30, 'YOU', {
         fontFamily: 'Arial, sans-serif',
@@ -203,45 +336,172 @@ export class Game extends Scene {
 
     xDirection /= length
     yDirection /= length
+    this.facingX = xDirection
+    this.facingY = yDirection
 
-    this.player.x = Math.max(
-      ARENA.left + PLAYER_RADIUS,
-      Math.min(
-        ARENA.right - PLAYER_RADIUS,
-        this.player.x + xDirection * PLAYER_SPEED * (delta / 1000),
-      ),
+    this.setPlayerPosition(
+      this.player.x + xDirection * COMBAT.playerSpeed * (delta / 1000),
+      this.player.y + yDirection * COMBAT.playerSpeed * (delta / 1000),
     )
-    this.player.y = Math.max(
-      ARENA.top + PLAYER_RADIUS,
-      Math.min(
-        ARENA.bottom - PLAYER_RADIUS,
-        this.player.y + yDirection * PLAYER_SPEED * (delta / 1000),
+  }
+
+  private setPlayerPosition(x: number, y: number) {
+    this.player.setPosition(
+      Math.max(
+        ARENA.left + COMBAT.playerRadius,
+        Math.min(ARENA.right - COMBAT.playerRadius, x),
+      ),
+      Math.max(
+        ARENA.top + COMBAT.playerRadius,
+        Math.min(ARENA.bottom - COMBAT.playerRadius, y),
       ),
     )
   }
 
-  private punch() {
-    const distance = Math.hypot(
-      this.player.x - this.enemy.x,
-      this.player.y - this.enemy.y,
-    )
+  private updateStaminaHud() {
+    const stamina = Math.floor(this.stamina)
+    this.staminaFill.width =
+      COMBAT.barWidth * (this.stamina / COMBAT.maxStamina)
+    if (stamina !== this.displayedStamina) {
+      this.staminaText.setText(`${stamina} / ${COMBAT.maxStamina}`)
+      this.displayedStamina = stamina
+    }
+  }
 
-    if (distance > ATTACK_RANGE || this.enemyHealth <= 0) return
+  private performAction(action: CombatAction, time: number) {
+    const config = COMBAT.actions[action]
+    if (
+      time < this.cooldowns[action] ||
+      this.stamina < config.staminaCost ||
+      this.enemyHealth <= 0
+    ) {
+      return
+    }
 
-    this.enemyHealth = Math.max(0, this.enemyHealth - ATTACK_DAMAGE)
-    this.enemyHealthFill.width = 220 * (this.enemyHealth / ENEMY_MAX_HEALTH)
-    this.enemyHealthText.setText(`${this.enemyHealth} / ${ENEMY_MAX_HEALTH}`)
+    this.cooldowns[action] = time + config.cooldownMs
+    this.stamina -= config.staminaCost
+    this.updateStaminaHud()
+
+    if (action === 'dash') {
+      this.dash(config)
+      return
+    }
+
+    this.showAttackEffect(config)
+    this.hitEnemy(config)
+  }
+
+  private hitEnemy(config: ActionConfig) {
+    const dx = this.enemy.x - this.player.x
+    const dy = this.enemy.y - this.player.y
+    const distance = Math.hypot(dx, dy)
+    const facingDot =
+      distance === 0 ? 1 : (dx * this.facingX + dy * this.facingY) / distance
+
+    if (
+      distance > config.range ||
+      facingDot < config.minFacingDot ||
+      this.enemyHealth <= 0
+    ) {
+      return
+    }
+
+    this.enemyHealth = Math.max(0, this.enemyHealth - config.damage)
+    this.enemyHealthFill.width =
+      COMBAT.barWidth * (this.enemyHealth / COMBAT.enemyHealth)
+    this.enemyHealthText.setText(`${this.enemyHealth} / ${COMBAT.enemyHealth}`)
+    this.enemy.setFillStyle(0xffffff)
     this.tweens.add({
       targets: this.enemy,
       alpha: 0.35,
       duration: 70,
       yoyo: true,
       repeat: 1,
+      onComplete: () => {
+        this.enemy.setFillStyle(0xff755f)
+        this.enemy.setAlpha(1)
+      },
     })
+    this.showDamageNumber(config.damage)
 
     if (this.enemyHealth === 0) {
       this.showVictory()
     }
+  }
+
+  private showAttackEffect(config: ActionConfig) {
+    const effect = this.add
+      .circle(
+        this.player.x + this.facingX * (config.range * 0.55),
+        this.player.y + this.facingY * (config.range * 0.55),
+        config.effectRadius,
+        config.color,
+        0.38,
+      )
+      .setDepth(3)
+
+    this.tweens.add({
+      targets: effect,
+      scale: 1.45,
+      alpha: 0,
+      duration: 180,
+      onComplete: () => effect.destroy(),
+    })
+  }
+
+  private showDamageNumber(damage: number) {
+    const label = this.add
+      .text(this.enemy.x, this.enemy.y - 36, `-${damage}`, {
+        fontFamily: 'Arial Black, sans-serif',
+        fontSize: '20px',
+        color: '#fff4c2',
+        stroke: '#442b2b',
+        strokeThickness: 3,
+      })
+      .setOrigin(0.5)
+      .setDepth(4)
+
+    this.tweens.add({
+      targets: label,
+      y: label.y - 38,
+      alpha: 0,
+      duration: 650,
+      onComplete: () => label.destroy(),
+    })
+  }
+
+  private dash(config: ActionConfig) {
+    const movingX =
+      Number(this.pressedKeys.has('KeyD')) -
+      Number(this.pressedKeys.has('KeyA'))
+    const movingY =
+      Number(this.pressedKeys.has('KeyS')) -
+      Number(this.pressedKeys.has('KeyW'))
+    const length = Math.hypot(movingX, movingY)
+    const directionX = length > 0 ? movingX / length : this.facingX
+    const directionY = length > 0 ? movingY / length : this.facingY
+    const startX = this.player.x
+    const startY = this.player.y
+
+    if (length > 0) {
+      this.facingX = directionX
+      this.facingY = directionY
+    }
+
+    this.setPlayerPosition(
+      startX + directionX * COMBAT.dashDistance,
+      startY + directionY * COMBAT.dashDistance,
+    )
+
+    const trail = this.add.graphics().setDepth(1)
+    trail.lineStyle(10, config.color, 0.62)
+    trail.lineBetween(startX, startY, this.player.x, this.player.y)
+    this.tweens.add({
+      targets: trail,
+      alpha: 0,
+      duration: 220,
+      onComplete: () => trail.destroy(),
+    })
   }
 
   private showVictory() {
