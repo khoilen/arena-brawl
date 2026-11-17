@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
-import { IRefPhaserGame, PhaserGame } from './PhaserGame'
-import { MainMenu } from './game/scenes/MainMenu'
+import { IRefPhaserGame, PhaserGame } from './phaser-game'
+import { MainMenu } from './game/scenes/main-menu'
 
 function App() {
   // The sprite can only be moved in the MainMenu Scene
