@@ -1,0 +1,5 @@
+{
+  "extends": "@arena-brawl/type-config/base.json",
+  "include": ["src"],
+  "references": [{ "path": "./tsconfig.node.json" }]
+}
