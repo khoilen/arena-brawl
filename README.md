@@ -1,6 +1,6 @@
 # Arena Brawl
 
-Arena Brawl is a React, TypeScript, Vite, and Phaser game in `apps/web`.
+Arena Brawl is a React, TypeScript, Vite, and Phaser game in `apps/arena-brawl`.
 
 ```sh
 pnpm install
@@ -9,4 +9,4 @@ pnpm typecheck
 pnpm build
 ```
 
-For Vercel, set the project root directory to `apps/web` and use `pnpm build` with `dist` as the output directory.
+For Vercel, set the project root directory to `apps/arena-brawl` and use `pnpm build` with `dist` as the output directory.
