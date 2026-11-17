@@ -1,5 +1,10 @@
 import { EventBus } from '../event-bus'
 import { Scene } from 'phaser'
+import {
+  dashWithinBounds,
+  moveWithinBounds,
+  normalizeDirection,
+} from '@arena-brawl/character-movement'
 
 const WIDTH = 800
 const HEIGHT = 600
@@ -324,38 +329,29 @@ export class Game extends Scene {
   }
 
   private movePlayer(delta: number) {
-    let xDirection =
-      Number(this.pressedKeys.has('KeyD')) -
-      Number(this.pressedKeys.has('KeyA'))
-    let yDirection =
-      Number(this.pressedKeys.has('KeyS')) -
-      Number(this.pressedKeys.has('KeyW'))
-    const length = Math.hypot(xDirection, yDirection)
+    const direction = normalizeDirection({
+      x:
+        Number(this.pressedKeys.has('KeyD')) -
+        Number(this.pressedKeys.has('KeyA')),
+      y:
+        Number(this.pressedKeys.has('KeyS')) -
+        Number(this.pressedKeys.has('KeyW')),
+    })
 
-    if (length === 0) return
+    if (direction.x === 0 && direction.y === 0) return
 
-    xDirection /= length
-    yDirection /= length
-    this.facingX = xDirection
-    this.facingY = yDirection
+    this.facingX = direction.x
+    this.facingY = direction.y
 
-    this.setPlayerPosition(
-      this.player.x + xDirection * COMBAT.playerSpeed * (delta / 1000),
-      this.player.y + yDirection * COMBAT.playerSpeed * (delta / 1000),
+    const position = moveWithinBounds(
+      { x: this.player.x, y: this.player.y },
+      direction,
+      COMBAT.playerSpeed,
+      delta,
+      ARENA,
+      COMBAT.playerRadius,
     )
-  }
-
-  private setPlayerPosition(x: number, y: number) {
-    this.player.setPosition(
-      Math.max(
-        ARENA.left + COMBAT.playerRadius,
-        Math.min(ARENA.right - COMBAT.playerRadius, x),
-      ),
-      Math.max(
-        ARENA.top + COMBAT.playerRadius,
-        Math.min(ARENA.bottom - COMBAT.playerRadius, y),
-      ),
-    )
+    this.player.setPosition(position.x, position.y)
   }
 
   private updateStaminaHud() {
@@ -477,21 +473,19 @@ export class Game extends Scene {
     const movingY =
       Number(this.pressedKeys.has('KeyS')) -
       Number(this.pressedKeys.has('KeyW'))
-    const length = Math.hypot(movingX, movingY)
-    const directionX = length > 0 ? movingX / length : this.facingX
-    const directionY = length > 0 ? movingY / length : this.facingY
     const startX = this.player.x
     const startY = this.player.y
-
-    if (length > 0) {
-      this.facingX = directionX
-      this.facingY = directionY
-    }
-
-    this.setPlayerPosition(
-      startX + directionX * COMBAT.dashDistance,
-      startY + directionY * COMBAT.dashDistance,
+    const result = dashWithinBounds(
+      { x: startX, y: startY },
+      { x: movingX, y: movingY },
+      { x: this.facingX, y: this.facingY },
+      COMBAT.dashDistance,
+      ARENA,
+      COMBAT.playerRadius,
     )
+    this.facingX = result.direction.x
+    this.facingY = result.direction.y
+    this.player.setPosition(result.position.x, result.position.y)
 
     const trail = this.add.graphics().setDepth(1)
     trail.lineStyle(10, config.color, 0.62)
