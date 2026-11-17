@@ -22,6 +22,8 @@ export class Game extends Scene {
   private hasWon = false
 
   private readonly handleKeyDown = (event: KeyboardEvent) => {
+    if (event.repeat) return
+
     if (!['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyJ'].includes(event.code)) return
 
     event.preventDefault()
@@ -54,6 +56,11 @@ export class Game extends Scene {
   }
 
   create() {
+    this.enemyHealth = ENEMY_MAX_HEALTH
+    this.hasWon = false
+    this.pressedKeys.clear()
+    this.punchRequested = false
+
     this.cameras.main.setBackgroundColor('#09111f')
     this.drawArena()
     this.createHud()
@@ -63,6 +70,7 @@ export class Game extends Scene {
     window.addEventListener('keyup', this.handleKeyUp)
     window.addEventListener('blur', this.clearPressedKeys)
     this.events.once('shutdown', this.removeKeyboardListeners, this)
+    this.events.once('destroy', this.removeKeyboardListeners, this)
 
     EventBus.emit('current-scene-ready', this)
   }
@@ -196,24 +204,26 @@ export class Game extends Scene {
     xDirection /= length
     yDirection /= length
 
-    this.player.x = Phaser.Math.Clamp(
-      this.player.x + xDirection * PLAYER_SPEED * (delta / 1000),
+    this.player.x = Math.max(
       ARENA.left + PLAYER_RADIUS,
-      ARENA.right - PLAYER_RADIUS,
+      Math.min(
+        ARENA.right - PLAYER_RADIUS,
+        this.player.x + xDirection * PLAYER_SPEED * (delta / 1000),
+      ),
     )
-    this.player.y = Phaser.Math.Clamp(
-      this.player.y + yDirection * PLAYER_SPEED * (delta / 1000),
+    this.player.y = Math.max(
       ARENA.top + PLAYER_RADIUS,
-      ARENA.bottom - PLAYER_RADIUS,
+      Math.min(
+        ARENA.bottom - PLAYER_RADIUS,
+        this.player.y + yDirection * PLAYER_SPEED * (delta / 1000),
+      ),
     )
   }
 
   private punch() {
-    const distance = Phaser.Math.Distance.Between(
-      this.player.x,
-      this.player.y,
-      this.enemy.x,
-      this.enemy.y,
+    const distance = Math.hypot(
+      this.player.x - this.enemy.x,
+      this.player.y - this.enemy.y,
     )
 
     if (distance > ATTACK_RANGE || this.enemyHealth <= 0) return
