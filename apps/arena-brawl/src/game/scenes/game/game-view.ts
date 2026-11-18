@@ -1,6 +1,6 @@
 import type { Scene } from 'phaser'
 import { COMBAT, ARENA_BOUNDS, GAME_WIDTH, GAME_HEIGHT } from './game-config'
-import { createBoxerVisual } from './fighter-view'
+import { createFighterVisual, FIGHTERS } from './fighter-view'
 
 export type GameFighters = {
   player: Phaser.GameObjects.Arc
@@ -23,17 +23,16 @@ export type GameFighters = {
   timerText: Phaser.GameObjects.Text
 }
 
-export function createGameView(scene: Scene): GameFighters {
+export function createGameView(scene: Scene, playerIndex = 0, enemyIndex = 2): GameFighters {
   drawArena(scene)
   const hud = createHud(scene)
   const player = scene.add.circle(190, 354, COMBAT.playerRadius, 0xffffff, 0).setDepth(3)
   const enemy = scene.add.circle(610, 354, 24, 0xffffff, 0).setDepth(3)
   // Render scale is intentionally separate from the unchanged combat circles.
-  const playerVisual = createBoxerVisual(scene).setPosition(player.x, player.y).setDepth(4)
-  const enemyVisual = createBoxerVisual(scene, true).setPosition(enemy.x, enemy.y).setDepth(4)
-  enemyVisual.setData('isEnemy', true)
-  const playerLabel = scene.add.text(player.x, player.y + 44, 'P1', tagStyle('#7fc8ff')).setOrigin(0.5).setDepth(7)
-  const enemyLabel = scene.add.text(enemy.x, enemy.y - 58, 'BOT', tagStyle('#ff8174')).setOrigin(0.5).setDepth(7)
+  const playerVisual = createFighterVisual(scene, playerIndex).setPosition(player.x, player.y).setDepth(4)
+  const enemyVisual = createFighterVisual(scene, enemyIndex).setPosition(enemy.x, enemy.y).setDepth(4)
+  const playerLabel = scene.add.text(player.x, player.y + 44, `P1 · ${FIGHTERS[playerIndex].label}`, tagStyle('#7fc8ff')).setOrigin(0.5).setDepth(7)
+  const enemyLabel = scene.add.text(enemy.x, enemy.y - 58, `BOT · ${FIGHTERS[enemyIndex].label}`, tagStyle('#ff8174')).setOrigin(0.5).setDepth(7)
   const facingIndicator = scene.add.circle(player.x + 20, player.y, 3, 0xffd68a).setDepth(6)
   scene.add.rectangle(enemy.x - 31, enemy.y - 41, 62, 5, 0x11131a).setOrigin(0, 0.5).setDepth(6)
   const enemyStaminaFill = scene.add.rectangle(enemy.x - 31, enemy.y - 41, 62, 3, 0x37aaff).setOrigin(0, 0.5).setDepth(7)
@@ -118,9 +117,9 @@ function createHud(scene: Scene): Pick<GameFighters, 'playerHealthFill'|'playerH
   scene.add.text(400,19,'ROUND 1',{fontFamily:'Arial Black, sans-serif',fontSize:'12px',color:'#e7d6bf',letterSpacing:2}).setOrigin(.5).setDepth(22)
   scene.add.rectangle(400,37,92,1,0xa77855,.7).setDepth(21)
   const timerText=scene.add.text(400,58,'01:24',{fontFamily:'Arial Black, sans-serif',fontSize:'26px',color:'#fff4e3'}).setOrigin(.5).setDepth(22)
-  const hints=scene.add.rectangle(142,555,242,64,0x08090d,.76).setStrokeStyle(1,0x72533d,.75).setDepth(20)
-  scene.add.text(27,535,'W A S D   MOVE     L   DODGE',{fontFamily:'Arial, sans-serif',fontSize:'11px',color:'#e4ddd6',fontStyle:'bold',letterSpacing:1}).setDepth(22)
-  scene.add.text(27,558,'J  PUNCH   K  KICK   SPACE  SPECIAL',{fontFamily:'Arial, sans-serif',fontSize:'10px',color:'#c8bcb1',fontStyle:'bold',letterSpacing:.4}).setDepth(22)
+  const hints=scene.add.rectangle(205,555,370,64,0x08090d,.76).setStrokeStyle(1,0x72533d,.75).setDepth(20)
+  scene.add.text(27,535,'W A S D MOVE   1 NINJA  2 STRIKER  3 BOXER  L DODGE',{fontFamily:'Arial, sans-serif',fontSize:'10px',color:'#e4ddd6',fontStyle:'bold',letterSpacing:.5}).setDepth(22)
+  scene.add.text(27,558,'J  PUNCH   K  KICK   I  JUMP   SPACE  SPECIAL',{fontFamily:'Arial, sans-serif',fontSize:'10px',color:'#c8bcb1',fontStyle:'bold',letterSpacing:.4}).setDepth(22)
   const cooldownText=scene.add.text(775,520,'J  PUNCH     READY\nK  KICK       READY\nL  DODGE     READY\nSPACE  SPECIAL  READY',{fontFamily:'Arial, sans-serif',fontSize:'11px',fontStyle:'bold',color:'#f0e5d8',align:'left',lineSpacing:5,backgroundColor:'#08090de8',padding:{x:11,y:9}}).setOrigin(1,0).setDepth(22)
   void hints
   return {playerHealthFill,playerHealthText,enemyHealthFill,enemyHealthText,staminaFill,staminaText,enemyHudStaminaFill,enemyStaminaText,cooldownText,timerText}
@@ -148,15 +147,14 @@ export function showSpecialEffect(scene:Scene, attacker:Phaser.GameObjects.Arc, 
 }
 
 export function showDodgeAfterimage(scene:Scene, fighter:Phaser.GameObjects.Container, x:number, y:number) {
-  const sprite=fighter.getByName('boxer-sprite') as Phaser.GameObjects.Sprite
+  const sprite=fighter.getByName('fighter-sprite') as Phaser.GameObjects.Sprite
   if(!sprite?.active) return
-  const ghost=scene.add.image(x,y,'boxer')
+  const ghost=scene.add.image(x,y,sprite.texture.key,sprite.frame.name)
     .setOrigin(sprite.originX,sprite.originY)
     .setDisplaySize(sprite.displayWidth,sprite.displayHeight)
     .setFlipX(sprite.flipX)
     .setAlpha(.34)
     .setDepth(fighter.depth-1)
-  if(fighter.getData('isEnemy')) ghost.setTint(0x8fcaff)
   scene.tweens.add({targets:ghost,alpha:0,scaleX:.78,duration:190,onComplete:()=>ghost.destroy()})
 }
 export function showKickTrail(scene:Scene, attacker:Phaser.GameObjects.Arc, facing:{x:number;y:number}) {

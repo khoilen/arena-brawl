@@ -8,9 +8,9 @@ import {
 
 import { attackHits, type PendingAttack } from './combat-utils'
 import {
-  flashBoxer,
+  flashCharacter,
   FighterAnimationController,
-  type FighterAnimationState,
+  FIGHTERS,
 } from './fighter-view'
 import {
   createGameView,
@@ -58,6 +58,7 @@ export class Game extends Scene {
   private roundStartedAt = 0
   private displayedStamina = -1
   private pressedKeys = new Set<string>()
+  private pendingJump = false
   private pendingActions: CombatAction[] = []
   private cooldowns: Record<CombatAction, number> = {
     punch: 0,
@@ -86,9 +87,11 @@ export class Game extends Scene {
   private playerHealthDisplayed = -1
   private facingX = 1
   private facingY = 0
+  private playerVelocity = { x: 0, y: 0 }
+  private enemyVelocity = { x: 0, y: 0 }
   private stamina: number = COMBAT.maxStamina
   private matchEnded = false
-  private playerAnimationState: FighterAnimationState = 'idle'
+  private selectedCharacter = 0
 
   private readonly handleKeyDown = (event: KeyboardEvent) => {
     if (event.repeat || this.matchEnded) return
@@ -99,6 +102,10 @@ export class Game extends Scene {
         'KeyA',
         'KeyS',
         'KeyD',
+        'KeyI',
+        'Digit1',
+        'Digit2',
+        'Digit3',
         ...Object.keys(ACTION_FOR_KEY),
       ].includes(event.code)
     ) {
@@ -106,6 +113,14 @@ export class Game extends Scene {
     }
 
     event.preventDefault()
+
+    const selectedSlot = ['Digit1', 'Digit2', 'Digit3'].indexOf(event.code)
+    if (selectedSlot !== -1) {
+      this.selectCharacter(selectedSlot)
+      return
+    }
+
+    if (event.code === 'KeyI') this.pendingJump = true
 
     const action = ACTION_FOR_KEY[event.code]
     if (action && !this.pressedKeys.has(event.code)) {
@@ -129,6 +144,7 @@ export class Game extends Scene {
     window.removeEventListener('blur', this.clearPressedKeys)
     this.clearPressedKeys()
     this.pendingActions = []
+    this.pendingJump = false
   }
 
   constructor() {
@@ -136,15 +152,18 @@ export class Game extends Scene {
   }
 
   preload() {
-    this.load.image(
-      'boxer',
-      `${import.meta.env.BASE_URL}assets/characters/boxer.png`,
-    )
-    this.load.spritesheet(
-      'boxer-punch',
-      `${import.meta.env.BASE_URL}assets/characters/boxer/boxer-punch.png`,
-      { frameWidth: 256, frameHeight: 256 },
-    )
+    FIGHTERS.forEach(({ texture, walkTexture }) => {
+      this.load.spritesheet(
+        texture,
+        `${import.meta.env.BASE_URL}assets/fighters/${texture.replace('fighter-', '')}.png`,
+        { frameWidth: 320, frameHeight: 240 },
+      )
+      this.load.spritesheet(
+        walkTexture,
+        `${import.meta.env.BASE_URL}assets/fighters/walk/${texture.replace('fighter-', '')}.png`,
+        { frameWidth: 320, frameHeight: 240 },
+      )
+    })
   }
 
   create() {
@@ -157,10 +176,13 @@ export class Game extends Scene {
     this.enemyStaminaDisplayed = -1
     this.facingX = 1
     this.facingY = 0
+    this.playerVelocity = { x: 0, y: 0 }
+    this.enemyVelocity = { x: 0, y: 0 }
     this.enemyFacingX = -1
     this.enemyFacingY = 0
     this.pressedKeys.clear()
     this.pendingActions = []
+    this.pendingJump = false
     this.pendingAttacks = []
     this.cooldowns = { punch: 0, kick: 0, dash: 0, special: 0 }
     this.enemyCooldowns = { punch: 0, kick: 0, dash: 0 }
@@ -171,22 +193,26 @@ export class Game extends Scene {
     this.enemyDodgeCount = 0
     this.dodgeRandomState = 0x0a11ce
     this.matchEnded = false
-    this.playerAnimationState = 'idle'
+    this.selectedCharacter = 0
     this.roundStartedAt = this.time.now
 
     this.cameras.main.setBackgroundColor('#09111f')
-    if (!this.anims.exists('boxer-punch')) {
-      this.anims.create({
-        key: 'boxer-punch',
-        frames: this.anims.generateFrameNumbers('boxer-punch', {
-          start: 0,
-          end: 5,
-        }),
-        frameRate: 15,
-        repeat: 0,
-      })
-    }
-    Object.assign(this, createGameView(this))
+    FIGHTERS.forEach(({ texture, walkTexture }) => {
+      const makeAnimation = (stance: string, frameTexture: string, frames: number[], frameRate: number, repeat: number) => {
+        const key = `${texture}-${stance}`
+        if (this.anims.exists(key)) return
+        this.anims.create({
+          key,
+          frames: frames.map((frame) => ({ key: frameTexture, frame })),
+          frameRate,
+          repeat,
+        })
+      }
+      makeAnimation('walk', walkTexture, [0, 1, 2, 3], 6, -1)
+      makeAnimation('punch', texture, [4, 5], 12, 0)
+      makeAnimation('kick', texture, [6, 7], 8, 0)
+    })
+    Object.assign(this, createGameView(this, 0, 2))
     this.playerAnimator = new FighterAnimationController(this, this.playerVisual)
     this.enemyAnimator = new FighterAnimationController(this, this.enemyVisual)
 
@@ -214,6 +240,11 @@ export class Game extends Scene {
     this.updatePlayerHealthHud()
     this.movePlayer(delta)
 
+    if (this.pendingJump) {
+      this.pendingJump = false
+      this.playerAnimator.play('jump', this.facingX)
+    }
+
     for (const action of this.pendingActions.splice(0)) {
       if (this.matchEnded) break
       this.performAction(action, time)
@@ -237,30 +268,33 @@ export class Game extends Scene {
         Number(this.pressedKeys.has('KeyW')),
     })
 
-    if (direction.x === 0 && direction.y === 0) {
-      this.playerAnimator.setMovement(false, this.facingX)
-      if (this.playerAnimationState === 'walk') {
-        this.playerAnimationState = 'idle'
-        this.playerVisual.setAngle(0)
-      }
-      return
+    const hasInput = direction.x !== 0 || direction.y !== 0
+    if (hasInput) {
+      this.facingX = direction.x || this.facingX
+      this.facingY = direction.y
     }
 
-    this.facingX = direction.x
-    this.facingY = direction.y
-
-    const position = moveWithinBounds(
-      { x: this.player.x, y: this.player.y },
-      direction,
-      COMBAT.playerSpeed,
-      delta,
-      ARENA,
-      COMBAT.playerRadius,
-    )
+    const targetVelocity = {
+      x: direction.x * COMBAT.playerSpeed,
+      y: direction.y * COMBAT.playerSpeed,
+    }
+    const maxChange = (hasInput ? 1850 : 2300) * (Math.min(delta, 50) / 1000)
+    this.playerVelocity = approachVector(this.playerVelocity, targetVelocity, maxChange)
+    const speed = Math.hypot(this.playerVelocity.x, this.playerVelocity.y)
+    const position = speed > 0.5
+      ? moveWithinBounds(
+          { x: this.player.x, y: this.player.y },
+          normalizeDirection(this.playerVelocity),
+          speed,
+          delta,
+          ARENA,
+          COMBAT.playerRadius,
+        )
+      : { x: this.player.x, y: this.player.y }
     this.player.setPosition(position.x, position.y)
     this.playerVisual.setPosition(position.x, position.y)
-    this.playerAnimationState = 'walk'
-    this.playerAnimator.setMovement(true, this.facingX)
+    const moving = speed > 12
+    this.playerAnimator.setMovement(moving, this.facingX, speed / COMBAT.playerSpeed)
   }
 
   private updateStaminaHud() {
@@ -307,6 +341,16 @@ export class Game extends Scene {
     this.cooldownText.setText(`J  PUNCH      ${this.cooldownHint('punch')}\nK  KICK       ${this.cooldownHint('kick')}\nL  DODGE      ${this.cooldownHint('dash')}\nSPACE  SPECIAL  ${this.cooldownHint('special')}`)
   }
 
+  private selectCharacter(index: number) {
+    if (index === this.selectedCharacter) return
+    this.selectedCharacter = index
+    this.playerAnimator.setCharacter(index)
+    const enemyIndex = (index + 2) % FIGHTERS.length
+    this.enemyAnimator.setCharacter(enemyIndex)
+    this.playerLabel.setText(`P1 · ${FIGHTERS[index].label}`)
+    this.enemyLabel.setText(`BOT · ${FIGHTERS[enemyIndex].label}`)
+  }
+
   private cooldownHint(action: CombatAction) {
     const remaining = Math.max(0, this.cooldowns[action] - this.time.now)
     return remaining > 0 ? `${(remaining / 1000).toFixed(1)}s` : 'READY'
@@ -337,11 +381,9 @@ export class Game extends Scene {
     showAttackEffect(this, this.player, facing, config)
     if (action === 'kick') showKickTrail(this, this.player, facing)
     if (action === 'punch') {
-      this.playerAnimationState = 'punch'
       this.playerAnimator.play('punch', facing.x)
     } else {
       const visualState = action === 'special' ? 'special' : 'kick'
-      this.playerAnimationState = visualState
       this.playerAnimator.play(visualState, facing.x)
     }
     if (action === 'special') showSpecialEffect(this, this.player, facing)
@@ -407,7 +449,6 @@ export class Game extends Scene {
 
       if (distance <= COMBAT.actions.kick.range) {
         this.enemyState = 'ATTACK'
-        this.enemyAnimator.setMovement(false, this.enemyFacingX)
         this.startEnemyAttack(distance, time)
       } else {
         this.enemyState = 'CHASE'
@@ -415,11 +456,13 @@ export class Game extends Scene {
     }
 
     if (this.enemyState === 'CHASE') {
-      this.moveEnemy(delta)
+      this.moveEnemy(delta, true)
+    } else if (this.enemyState === 'ATTACK') {
+      this.moveEnemy(delta, false)
     }
   }
 
-  private moveEnemy(delta: number) {
+  private moveEnemy(delta: number, chasing: boolean) {
     const direction = normalizeDirection({
       x: this.player.x - this.enemy.x,
       y: this.player.y - this.enemy.y,
@@ -429,21 +472,26 @@ export class Game extends Scene {
       this.player.y - this.enemy.y,
     )
 
-    if (distance <= COMBAT.actions.kick.range) {
-      this.enemyAnimator.setMovement(false, this.enemyFacingX)
-      return
-    }
-
-    const position = moveWithinBounds(
-      { x: this.enemy.x, y: this.enemy.y },
-      direction,
-      COMBAT.playerSpeed * COMBAT.normal.enemySpeedMultiplier,
-      delta,
-      ARENA,
-      24,
-    )
+    const shouldMove = chasing && distance > COMBAT.actions.kick.range
+    const enemySpeed = COMBAT.playerSpeed * COMBAT.normal.enemySpeedMultiplier
+    const targetVelocity = shouldMove
+      ? { x: direction.x * enemySpeed, y: direction.y * enemySpeed }
+      : { x: 0, y: 0 }
+    const maxChange = (shouldMove ? 1500 : 2100) * (Math.min(delta, 50) / 1000)
+    this.enemyVelocity = approachVector(this.enemyVelocity, targetVelocity, maxChange)
+    const speed = Math.hypot(this.enemyVelocity.x, this.enemyVelocity.y)
+    const position = speed > 0.5
+      ? moveWithinBounds(
+          { x: this.enemy.x, y: this.enemy.y },
+          normalizeDirection(this.enemyVelocity),
+          speed,
+          delta,
+          ARENA,
+          24,
+        )
+      : { x: this.enemy.x, y: this.enemy.y }
     this.enemy.setPosition(position.x, position.y)
-    this.enemyAnimator.setMovement(true, this.enemyFacingX)
+    this.enemyAnimator.setMovement(speed > 12, this.enemyFacingX, speed / enemySpeed)
   }
 
   private startEnemyAttack(distance: number, time: number) {
@@ -501,6 +549,7 @@ export class Game extends Scene {
     }
 
     this.enemyDodgeCount += 1
+    this.enemyVelocity = { x: 0, y: 0 }
     const away = normalizeDirection({
       x: this.enemy.x - this.player.x,
       y: this.enemy.y - this.player.y,
@@ -568,7 +617,7 @@ export class Game extends Scene {
     this.enemyHealthText.setText(`${this.enemyHealth} / ${COMBAT.enemyHealth}`)
     this.enemyLabel.setText(`${this.enemyHealth} HP`)
     flashFighter(this, this.enemyVisual)
-    flashBoxer(this, this.enemyVisual)
+    flashCharacter(this, this.enemyVisual)
     showDamageNumber(this, this.enemy, damage)
     this.hitFeedback(this.enemy, direction, damage)
 
@@ -591,12 +640,11 @@ export class Game extends Scene {
     )
     this.playerHealthDisplayed = this.playerHealth
     flashFighter(this, this.playerVisual)
-    flashBoxer(this, this.playerVisual)
+    flashCharacter(this, this.playerVisual)
     showDamageNumber(this, this.player, damage)
     this.hitFeedback(this.player, direction, damage)
 
     if (this.playerHealth === 0) {
-      this.playerAnimationState = 'knockout'
       this.playerAnimator.play('knockout', direction.x)
       this.showMatchEnd('YOU LOSE', 0xff755f)
     }
@@ -623,8 +671,8 @@ export class Game extends Scene {
     this.facingY = result.direction.y
     this.player.setPosition(result.position.x, result.position.y)
     this.playerVisual.setPosition(result.position.x, result.position.y)
+    this.playerVelocity = { x: 0, y: 0 }
     showDodgeAfterimage(this, this.playerVisual, startX, startY)
-    this.playerAnimationState = 'dodge'
     this.playerAnimator.play('dodge', result.direction.x)
     this.playerVisual.setAlpha(0.68)
     this.tweens.add({ targets: this.playerVisual, alpha: 1, duration: 200, ease: 'Cubic.Out' })
@@ -637,7 +685,6 @@ export class Game extends Scene {
     showHitFeedback(this, point, direction, damage)
     this.cameras.main.shake(90, 0.0025 + damage * 0.00008, true)
     if (target === this.player) {
-      this.playerAnimationState = 'hurt'
       this.playerAnimator.play('hurt', -direction.x)
     } else this.enemyAnimator.play('hurt', -direction.x)
     // A tiny real-time pause makes confirmed hits read without delaying combat timers.
@@ -703,4 +750,17 @@ export class Game extends Scene {
     restartButton.on('pointerdown', () => this.scene.restart())
     this.tweens.add({ targets: [card, restartButton, restartLabel], alpha: 1, duration: 260, ease: 'Cubic.Out' })
   }
+}
+
+function approachVector(
+  current: { x: number; y: number },
+  target: { x: number; y: number },
+  maxChange: number,
+) {
+  const dx = target.x - current.x
+  const dy = target.y - current.y
+  const distance = Math.hypot(dx, dy)
+  if (distance <= maxChange || distance === 0) return target
+  const ratio = maxChange / distance
+  return { x: current.x + dx * ratio, y: current.y + dy * ratio }
 }
