@@ -118,8 +118,8 @@ function createHud(scene: Scene): Pick<GameFighters, 'playerHealthFill'|'playerH
   scene.add.rectangle(400,37,92,1,0xa77855,.7).setDepth(21)
   const timerText=scene.add.text(400,58,'01:24',{fontFamily:'Arial Black, sans-serif',fontSize:'26px',color:'#fff4e3'}).setOrigin(.5).setDepth(22)
   const hints=scene.add.rectangle(205,555,370,64,0x08090d,.76).setStrokeStyle(1,0x72533d,.75).setDepth(20)
-  scene.add.text(27,535,'W A S D MOVE   1 NINJA  2 STRIKER  3 BOXER  L DODGE',{fontFamily:'Arial, sans-serif',fontSize:'10px',color:'#e4ddd6',fontStyle:'bold',letterSpacing:.5}).setDepth(22)
-  scene.add.text(27,558,'J  PUNCH   K  KICK   I  JUMP   SPACE  SPECIAL',{fontFamily:'Arial, sans-serif',fontSize:'10px',color:'#c8bcb1',fontStyle:'bold',letterSpacing:.4}).setDepth(22)
+  scene.add.text(27,535,'W A S D MOVE   L DODGE   MOVE FREELY',{fontFamily:'Arial, sans-serif',fontSize:'10px',color:'#e4ddd6',fontStyle:'bold',letterSpacing:.5}).setDepth(22)
+  scene.add.text(27,558,'J PUNCH   K KICK   I JUMP   SPACE SPECIAL   M SOUND',{fontFamily:'Arial, sans-serif',fontSize:'10px',color:'#c8bcb1',fontStyle:'bold',letterSpacing:.4}).setDepth(22)
   const cooldownText=scene.add.text(775,520,'J  PUNCH     READY\nK  KICK       READY\nL  DODGE     READY\nSPACE  SPECIAL  READY',{fontFamily:'Arial, sans-serif',fontSize:'11px',fontStyle:'bold',color:'#f0e5d8',align:'left',lineSpacing:5,backgroundColor:'#08090de8',padding:{x:11,y:9}}).setOrigin(1,0).setDepth(22)
   void hints
   return {playerHealthFill,playerHealthText,enemyHealthFill,enemyHealthText,staminaFill,staminaText,enemyHudStaminaFill,enemyStaminaText,cooldownText,timerText}

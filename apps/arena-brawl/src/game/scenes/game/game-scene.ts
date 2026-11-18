@@ -7,8 +7,10 @@ import {
 } from '@arena-brawl/character-movement'
 
 import { attackHits, type PendingAttack } from './combat-utils'
+import { GameAudio } from './game-audio'
 import {
   flashCharacter,
+  createFighterVisual,
   FighterAnimationController,
   FIGHTERS,
 } from './fighter-view'
@@ -33,6 +35,12 @@ import {
   type CombatAction,
   type EnemyState,
 } from './game-config'
+
+const DIFFICULTIES = [
+  { label: 'EASY', description: 'Bot chậm hơn · đòn nhẹ hơn', enemySpeed: 0.56, enemyDamage: 0.7, decisionInterval: 520, dodgeProbability: 0.12 },
+  { label: 'NORMAL', description: 'Nhịp đấu cân bằng', enemySpeed: 0.76, enemyDamage: 1, decisionInterval: 300, dodgeProbability: 0.25 },
+  { label: 'HARD', description: 'Bot phản ứng nhanh · đòn nặng', enemySpeed: 0.94, enemyDamage: 1.25, decisionInterval: 190, dodgeProbability: 0.4 },
+] as const
 
 export class Game extends Scene {
   private player!: Phaser.GameObjects.Arc
@@ -92,9 +100,35 @@ export class Game extends Scene {
   private stamina: number = COMBAT.maxStamina
   private matchEnded = false
   private selectedCharacter = 0
+  private selectedDifficulty = 1
+  private audio = new GameAudio()
+  private roundStarted = false
+  private setupOverlay?: Phaser.GameObjects.Container
+  private characterBorders: Phaser.GameObjects.Rectangle[] = []
+  private difficultyBorders: Phaser.GameObjects.Rectangle[] = []
+  private difficultyDescription?: Phaser.GameObjects.Text
+
+  private get difficulty() {
+    return DIFFICULTIES[this.selectedDifficulty]
+  }
 
   private readonly handleKeyDown = (event: KeyboardEvent) => {
     if (event.repeat || this.matchEnded) return
+
+    if (!this.roundStarted) {
+      const fighterSlot = ['Digit1', 'Digit2', 'Digit3'].indexOf(event.code)
+      if (fighterSlot >= 0) {
+        event.preventDefault()
+        this.selectCharacter(fighterSlot)
+      } else if (event.code === 'KeyQ' || event.code === 'KeyE') {
+        event.preventDefault()
+        this.selectDifficulty(this.selectedDifficulty + (event.code === 'KeyE' ? 1 : -1))
+      } else if (event.code === 'Enter' || event.code === 'Space') {
+        event.preventDefault()
+        this.startRound()
+      }
+      return
+    }
 
     if (
       ![
@@ -103,9 +137,7 @@ export class Game extends Scene {
         'KeyS',
         'KeyD',
         'KeyI',
-        'Digit1',
-        'Digit2',
-        'Digit3',
+        'KeyM',
         ...Object.keys(ACTION_FOR_KEY),
       ].includes(event.code)
     ) {
@@ -114,9 +146,8 @@ export class Game extends Scene {
 
     event.preventDefault()
 
-    const selectedSlot = ['Digit1', 'Digit2', 'Digit3'].indexOf(event.code)
-    if (selectedSlot !== -1) {
-      this.selectCharacter(selectedSlot)
+    if (event.code === 'KeyM') {
+      this.audio.toggle()
       return
     }
 
@@ -194,6 +225,10 @@ export class Game extends Scene {
     this.dodgeRandomState = 0x0a11ce
     this.matchEnded = false
     this.selectedCharacter = 0
+    this.selectedDifficulty = 1
+    this.roundStarted = false
+    this.characterBorders = []
+    this.difficultyBorders = []
     this.roundStartedAt = this.time.now
 
     this.cameras.main.setBackgroundColor('#09111f')
@@ -215,6 +250,7 @@ export class Game extends Scene {
     Object.assign(this, createGameView(this, 0, 2))
     this.playerAnimator = new FighterAnimationController(this, this.playerVisual)
     this.enemyAnimator = new FighterAnimationController(this, this.enemyVisual)
+    this.buildSetupOverlay()
 
     window.addEventListener('keydown', this.handleKeyDown)
     window.addEventListener('keyup', this.handleKeyUp)
@@ -226,7 +262,7 @@ export class Game extends Scene {
   }
 
   update(time: number, delta: number) {
-    if (this.matchEnded) return
+    if (this.matchEnded || !this.roundStarted) return
 
     this.stamina = Math.min(
       COMBAT.maxStamina,
@@ -243,6 +279,7 @@ export class Game extends Scene {
     if (this.pendingJump) {
       this.pendingJump = false
       this.playerAnimator.play('jump', this.facingX)
+      this.audio.play('jump')
     }
 
     for (const action of this.pendingActions.splice(0)) {
@@ -342,6 +379,7 @@ export class Game extends Scene {
   }
 
   private selectCharacter(index: number) {
+    index = Math.max(0, Math.min(FIGHTERS.length - 1, Math.floor(index)))
     if (index === this.selectedCharacter) return
     this.selectedCharacter = index
     this.playerAnimator.setCharacter(index)
@@ -349,6 +387,92 @@ export class Game extends Scene {
     this.enemyAnimator.setCharacter(enemyIndex)
     this.playerLabel.setText(`P1 · ${FIGHTERS[index].label}`)
     this.enemyLabel.setText(`BOT · ${FIGHTERS[enemyIndex].label}`)
+    this.characterBorders.forEach((border, cardIndex) =>
+      border.setStrokeStyle(cardIndex === index ? 3 : 1, cardIndex === index ? 0xf2bd69 : 0x72533d, cardIndex === index ? 1 : 0.9),
+    )
+  }
+
+  private selectDifficulty(index: number) {
+    this.selectedDifficulty = Math.max(0, Math.min(DIFFICULTIES.length - 1, Math.floor(index)))
+    this.difficultyBorders.forEach((border, cardIndex) =>
+      border.setStrokeStyle(cardIndex === this.selectedDifficulty ? 3 : 1, cardIndex === this.selectedDifficulty ? 0xf2bd69 : 0x72533d, cardIndex === this.selectedDifficulty ? 1 : 0.9),
+    )
+    this.difficultyDescription?.setText(this.difficulty.description)
+  }
+
+  private buildSetupOverlay() {
+    const overlay = this.add.container(0, 0).setDepth(100)
+    this.setupOverlay = overlay
+    overlay.add(this.add.rectangle(WIDTH / 2, HEIGHT / 2, WIDTH, HEIGHT, 0x05060b, 0.78).setInteractive())
+    overlay.add(this.add.rectangle(400, 300, 760, 570, 0x171116, 0.98).setStrokeStyle(2, 0x986944, 1))
+    overlay.add(this.add.text(400, 43, 'CHOOSE YOUR FIGHTER', {
+      fontFamily: 'Arial Black, Arial, sans-serif', fontSize: '30px', color: '#fff2df', letterSpacing: 2,
+    }).setOrigin(0.5))
+    overlay.add(this.add.text(400, 80, 'Pick a fighter and set the challenge', {
+      fontFamily: 'Arial, sans-serif', fontSize: '15px', color: '#c9b8a8',
+    }).setOrigin(0.5))
+
+    const cardX = [210, 400, 590]
+    FIGHTERS.forEach((fighter, index) => {
+      const x = cardX[index]
+      const border = this.add.rectangle(x, 214, 174, 226, 0x21191b, 0.96)
+        .setStrokeStyle(index === this.selectedCharacter ? 3 : 1, index === this.selectedCharacter ? 0xf2bd69 : 0x72533d, 1)
+        .setInteractive({ useHandCursor: true })
+        .on('pointerdown', () => this.selectCharacter(index))
+      this.characterBorders.push(border)
+      overlay.add(border)
+
+      const preview = createFighterVisual(this, index).setPosition(x, 199).setScale(0.82)
+      overlay.add(preview)
+      overlay.add(this.add.text(x, 309, fighter.label, {
+        fontFamily: 'Arial Black, Arial, sans-serif', fontSize: '19px', color: '#fff0df', letterSpacing: 1,
+      }).setOrigin(0.5))
+      overlay.add(this.add.text(x, 334, `PRESS ${index + 1}`, {
+        fontFamily: 'Arial, sans-serif', fontSize: '11px', color: '#c9a989',
+      }).setOrigin(0.5))
+    })
+
+    overlay.add(this.add.text(400, 365, 'DIFFICULTY', {
+      fontFamily: 'Arial Black, Arial, sans-serif', fontSize: '13px', color: '#e7d6bf', letterSpacing: 2,
+    }).setOrigin(0.5))
+    const diffX = [294, 400, 506]
+    DIFFICULTIES.forEach((difficulty, index) => {
+      const border = this.add.rectangle(diffX[index], 399, 106, 38, 0x21191b, 1)
+        .setStrokeStyle(index === this.selectedDifficulty ? 3 : 1, index === this.selectedDifficulty ? 0xf2bd69 : 0x72533d, 1)
+        .setInteractive({ useHandCursor: true })
+        .on('pointerdown', () => this.selectDifficulty(index))
+      this.difficultyBorders.push(border)
+      overlay.add(border)
+      overlay.add(this.add.text(diffX[index], 399, difficulty.label, {
+        fontFamily: 'Arial Black, Arial, sans-serif', fontSize: '13px', color: '#fff0df',
+      }).setOrigin(0.5).setInteractive({ useHandCursor: true }).on('pointerdown', () => this.selectDifficulty(index)))
+    })
+    this.difficultyDescription = this.add.text(400, 433, this.difficulty.description, {
+      fontFamily: 'Arial, sans-serif', fontSize: '12px', color: '#c9b8a8',
+    }).setOrigin(0.5)
+    overlay.add(this.difficultyDescription)
+
+    const startButton = this.add.rectangle(400, 486, 244, 52, 0x8d2b23, 1)
+      .setStrokeStyle(2, 0xf2bd69, 1).setInteractive({ useHandCursor: true })
+      .on('pointerdown', () => this.startRound())
+    overlay.add(startButton)
+    overlay.add(this.add.text(400, 486, 'START FIGHT', {
+      fontFamily: 'Arial Black, Arial, sans-serif', fontSize: '19px', color: '#fff2df', letterSpacing: 2,
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true }).on('pointerdown', () => this.startRound()))
+    overlay.add(this.add.text(400, 531, '1–3 fighter     Q / E difficulty     ENTER start', {
+      fontFamily: 'Arial, sans-serif', fontSize: '11px', color: '#b6a497',
+    }).setOrigin(0.5))
+  }
+
+  private startRound() {
+    if (this.roundStarted) return
+    this.roundStarted = true
+    this.audio.unlock()
+    this.roundStartedAt = this.time.now
+    this.enemyNextDecisionAt = this.time.now + this.difficulty.decisionInterval
+    this.setupOverlay?.destroy(true)
+    this.setupOverlay = undefined
+    this.clearPressedKeys()
   }
 
   private cooldownHint(action: CombatAction) {
@@ -372,9 +496,12 @@ export class Game extends Scene {
     this.updateStaminaHud()
 
     if (action === 'dash') {
+      this.audio.play('dodge')
       this.dash(config)
       return
     }
+
+    this.audio.play(action)
 
     const origin = { x: this.player.x, y: this.player.y }
     const facing = { x: this.facingX, y: this.facingY }
@@ -410,7 +537,7 @@ export class Game extends Scene {
       return
     }
 
-    if (this.nextDodgeRoll() < COMBAT.normal.dodgeProbability) {
+    if (this.nextDodgeRoll() < this.difficulty.dodgeProbability) {
       this.enemyDodgeAt = time + COMBAT.normal.reactionDelayMs
     }
   }
@@ -441,7 +568,7 @@ export class Game extends Scene {
     if (this.enemyState === 'DODGE' && time < this.enemyDodgeUntil) return
 
     if (time >= this.enemyNextDecisionAt) {
-      this.enemyNextDecisionAt = time + COMBAT.normal.aiDecisionIntervalMs
+      this.enemyNextDecisionAt = time + this.difficulty.decisionInterval
       const distance = Math.hypot(
         this.player.x - this.enemy.x,
         this.player.y - this.enemy.y,
@@ -473,7 +600,7 @@ export class Game extends Scene {
     )
 
     const shouldMove = chasing && distance > COMBAT.actions.kick.range
-    const enemySpeed = COMBAT.playerSpeed * COMBAT.normal.enemySpeedMultiplier
+    const enemySpeed = COMBAT.playerSpeed * this.difficulty.enemySpeed
     const targetVelocity = shouldMove
       ? { x: direction.x * enemySpeed, y: direction.y * enemySpeed }
       : { x: 0, y: 0 }
@@ -524,6 +651,7 @@ export class Game extends Scene {
     }
 
     this.enemyCooldowns[action] = time + config.cooldownMs
+    this.audio.play(action)
     const origin = { x: this.enemy.x, y: this.enemy.y }
     const facing = { x: this.enemyFacingX, y: this.enemyFacingY }
     showAttackEffect(this, this.enemy, facing, config)
@@ -572,6 +700,7 @@ export class Game extends Scene {
     this.enemyStamina -= dash.staminaCost
     this.enemyCooldowns.dash = time + dash.cooldownMs
     this.enemyState = 'DODGE'
+    this.audio.play('dodge')
     this.enemyDodgeUntil = time + COMBAT.normal.dodgeDurationMs
     this.pendingAttacks = this.pendingAttacks.filter(
       (attack) => attack.attacker !== 'enemy',
@@ -603,7 +732,7 @@ export class Game extends Scene {
       if (attack.attacker === 'player' && this.enemyState !== 'DEAD') {
         this.damageEnemy(config.damage, attack.facing)
       } else if (attack.attacker === 'enemy') {
-        this.damagePlayer(config.damage, attack.facing)
+        this.damagePlayer(Math.round(config.damage * this.difficulty.enemyDamage), attack.facing)
       }
     }
   }
@@ -612,6 +741,7 @@ export class Game extends Scene {
     if (this.enemyState === 'DEAD') return
 
     this.enemyHealth = Math.max(0, this.enemyHealth - damage)
+    this.audio.play('hit')
     this.enemyHealthFill.width =
       COMBAT.barWidth * (this.enemyHealth / COMBAT.enemyHealth)
     this.enemyHealthText.setText(`${this.enemyHealth} / ${COMBAT.enemyHealth}`)
@@ -633,6 +763,7 @@ export class Game extends Scene {
     if (this.matchEnded) return
 
     this.playerHealth = Math.max(0, this.playerHealth - damage)
+    this.audio.play('hit')
     this.playerHealthFill.width =
       COMBAT.barWidth * (this.playerHealth / COMBAT.playerHealth)
     this.playerHealthText.setText(
@@ -694,6 +825,7 @@ export class Game extends Scene {
 
   private showMatchEnd(title: 'YOU WIN' | 'YOU LOSE', color: number) {
     this.matchEnded = true
+    this.audio.play(title === 'YOU WIN' ? 'win' : 'lose')
     this.pendingActions = []
     this.pendingAttacks = []
     this.add.rectangle(WIDTH / 2, HEIGHT / 2, WIDTH, HEIGHT, 0x050507, 0.82).setDepth(100)
